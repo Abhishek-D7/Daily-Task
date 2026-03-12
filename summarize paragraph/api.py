@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from huggingface_hub import InferenceClient
 
-from prompt import get_analysis_prompt, get_validation_prompt
+from prompt import get_analysis_prompt, get_validation_prompt, get_evaluation_prompt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -96,6 +96,10 @@ app = FastAPI(title="Document Analysis API")
 class AnalyzeRequest(BaseModel):
     text: str
 
+class EvaluateRequest(BaseModel):
+    expected_output: str
+    actual_output: str
+
 @app.post("/api/analyze")
 def analyze_endpoint(request: AnalyzeRequest):
     # SECURE YOUR TOKEN: Do not hardcode this in production.
@@ -113,3 +117,33 @@ def analyze_endpoint(request: AnalyzeRequest):
         return {"analysis": parsed_result}
     except json.JSONDecodeError:
         return {"analysis": result}
+
+@app.post("/api/evaluate")
+def evaluate_endpoint(request: EvaluateRequest):
+    # SECURE YOUR TOKEN: Do not hardcode this in production.
+    hf_token = os.getenv("HF_TOKEN") or "HF_TOKEN" 
+    
+    logger.info("Received evaluation request.")
+    messages = get_evaluation_prompt(request.expected_output, request.actual_output)
+    
+    # We use the same _call_llm helper
+    result = _call_llm(messages, hf_token)
+    
+    if not result:
+        raise HTTPException(status_code=503, detail="Error: All configured models are currently unavailable.")
+        
+    if result.startswith("Error:"):
+        raise HTTPException(status_code=503, detail=result)
+        
+    try:
+        # Clean any markdown wrapper
+        clean_res = result.strip()
+        if clean_res.startswith('```json'):
+            clean_res = clean_res[7:-3].strip()
+        elif clean_res.startswith('```'):
+            clean_res = clean_res[3:-3].strip()
+            
+        parsed_result = json.loads(clean_res)
+        return {"evaluation": parsed_result}
+    except json.JSONDecodeError:
+        return {"evaluation": {"is_match": False, "reasoning": f"Failed to parse LLM evaluation: {result}"}}
