@@ -1,11 +1,12 @@
 import os
+import json
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from huggingface_hub import InferenceClient
 
-from prompt import get_analysis_prompt
+from prompt import get_analysis_prompt, get_validation_prompt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -18,26 +19,75 @@ MODELS_TO_TRY = [
     "meta-llama/Meta-Llama-3-8B-Instruct"
 ]
 
-def analyze_document(text: str, token: str, models: List[str] = MODELS_TO_TRY) -> str:
-    """Analyzes text to extract a summary, action items, and decisions."""
-    messages = get_analysis_prompt(text)
-
+def _call_llm(messages: list[dict], token: str, models: List[str] = MODELS_TO_TRY) -> Optional[str]:
+    """Helper method to iterate through models and call the API."""
     for model_id in models:
-        logger.info(f"Attempting analysis with model: {model_id}...")
+        logger.info(f"Attempting API call with model: {model_id}...")
         client = InferenceClient(model=model_id, token=token)
         try:
             response = client.chat_completion(messages=messages, max_tokens=512, temperature=0.3)
-            logger.info(f"Success with {model_id}!\n")
+            logger.info(f"Success with {model_id}!")
             return response.choices[0].message.content.strip()
         except Exception as e:
             error_msg = str(e).lower()
             if "not supported" in error_msg or "loading" in error_msg:
                 logger.warning(f"Model {model_id} unavailable. Trying fallback...")
                 continue 
-            logger.error(f"Critical API error: {str(e)}")
+            logger.error(f"API error with {model_id}: {str(e)}")
             return f"Error: {str(e)}"
             
-    return "Error: All configured models are currently unavailable."
+    return None
+
+def analyze_document(text: str, token: str, models: List[str] = MODELS_TO_TRY) -> str:
+    """Analyzes text to extract information and validates the extraction."""
+    # 1. Generate Initial Analysis
+    analysis_messages = get_analysis_prompt(text)
+    initial_analysis = _call_llm(analysis_messages, token, models)
+    
+    if not initial_analysis:
+        return "Error: All configured models are currently unavailable."
+        
+    if initial_analysis.startswith("Error:"):
+        return initial_analysis
+
+    # 2. Validate the Analysis
+    logger.info("Starting validation of the generated analysis...")
+    validation_messages = get_validation_prompt(text, initial_analysis)
+    validation_response = _call_llm(validation_messages, token, models)
+
+    if not validation_response or validation_response.startswith("Error:"):
+        logger.warning("Validation step failed. Returning unvalidated initial analysis.")
+        return initial_analysis
+
+    # 3. Process Validation Response
+    try:
+        # Clean any possible markdown wrappers around JSON
+        clean_val = validation_response.strip()
+        if clean_val.startswith('```json'):
+            clean_val = clean_val[7:-3].strip()
+        elif clean_val.startswith('```'):
+            clean_val = clean_val[3:-3].strip()
+
+        val_data = json.loads(clean_val)
+        is_valid = val_data.get("is_valid", False)
+        reason = val_data.get("auditor_reasoning", "No reason provided")
+        
+        logger.info(f"Validation result: Valid={is_valid}, Reason={reason}")
+
+        if is_valid:
+            return initial_analysis
+        
+        corrected_json = val_data.get("corrected_json")
+        if corrected_json:
+            logger.info("Returning corrected JSON from validator.")
+            if isinstance(corrected_json, str):
+                return corrected_json
+            return json.dumps(corrected_json, indent=2)
+
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse validator JSON response. Returning initial analysis.")
+
+    return initial_analysis
 
 # --- FastAPI Setup ---
 app = FastAPI(title="Document Analysis API")
@@ -57,4 +107,9 @@ def analyze_endpoint(request: AnalyzeRequest):
     if result.startswith("Error:"):
         raise HTTPException(status_code=503, detail=result)
         
-    return {"analysis": result}
+    # Attempt to safely return actual JSON instead of a string-encoded JSON if applicable
+    try:
+        parsed_result = json.loads(result)
+        return {"analysis": parsed_result}
+    except json.JSONDecodeError:
+        return {"analysis": result}
