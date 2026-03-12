@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from huggingface_hub import InferenceClient
 
-from prompt import get_analysis_prompt, get_validation_prompt, get_evaluation_prompt
+from prompt import get_analysis_prompt, get_validation_prompt, get_evaluation_prompt, get_qa_grounding_prompt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -100,6 +100,11 @@ class EvaluateRequest(BaseModel):
     expected_output: str
     actual_output: str
 
+class QARequest(BaseModel):
+    text: str
+    query: str
+
+
 @app.post("/api/analyze")
 def analyze_endpoint(request: AnalyzeRequest):
     # SECURE YOUR TOKEN: Do not hardcode this in production.
@@ -147,3 +152,30 @@ def evaluate_endpoint(request: EvaluateRequest):
         return {"evaluation": parsed_result}
     except json.JSONDecodeError:
         return {"evaluation": {"is_match": False, "reasoning": f"Failed to parse LLM evaluation: {result}"}}
+
+@app.post("/api/qa")
+def qa_endpoint(request: QARequest):
+    hf_token = os.getenv("HF_TOKEN") or "HF_TOKEN" 
+    
+    logger.info(f"Received Q&A request for query: {request.query}")
+    messages = get_qa_grounding_prompt(request.text, request.query)
+    
+    result = _call_llm(messages, hf_token)
+    
+    if not result:
+        raise HTTPException(status_code=503, detail="Error: All configured models are currently unavailable.")
+        
+    if result.startswith("Error:"):
+        raise HTTPException(status_code=503, detail=result)
+        
+    try:
+        clean_res = result.strip()
+        if clean_res.startswith('```json'):
+            clean_res = clean_res[7:-3].strip()
+        elif clean_res.startswith('```'):
+            clean_res = clean_res[3:-3].strip()
+            
+        parsed_result = json.loads(clean_res)
+        return {"qa_result": parsed_result}
+    except json.JSONDecodeError:
+        return {"qa_result": {"query": request.query, "answer": "Error parsing LLM response", "confidence_reasoning": result}}
