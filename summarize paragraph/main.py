@@ -1,7 +1,10 @@
 import os
+import json
 import logging
 from typing import List, Optional
 from huggingface_hub import InferenceClient
+
+from prompt import get_analysis_prompt, get_validation_prompt
 
 # Configure logging for professional, clean console output
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -15,72 +18,78 @@ DEFAULT_MODELS = [
     "meta-llama/Meta-Llama-3-8B-Instruct"    # The flagship free model
 ]
 
+def _call_llm(messages: list[dict], token: str, models: List[str] = DEFAULT_MODELS) -> Optional[str]:
+    """Helper method to iterate through models and call the API."""
+    for model_id in models:
+        logger.info(f"Attempting API call with model: {model_id}...")
+        client = InferenceClient(model=model_id, token=token)
+        try:
+            response = client.chat_completion(messages=messages, max_tokens=512, temperature=0.3)
+            logger.info(f"Success with {model_id}!")
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "not supported" in error_msg or "loading" in error_msg:
+                logger.warning(f"Model {model_id} unavailable. Trying fallback...")
+                continue 
+            logger.error(f"API error with {model_id}: {str(e)}")
+            return f"Error: {str(e)}"
+            
+    return None
+
 def analyze_document(text: str, token: str, models: Optional[List[str]] = None) -> str:
-    """
-    Analyzes text to extract a summary, action items, and decisions.
-    Includes a fallback mechanism to try multiple models if one is unavailable.
-    """
+    """Analyzes text to extract information and validates the extraction."""
     if models is None:
         models = DEFAULT_MODELS
 
-    messages = [
-        {
-            "role": "system", 
-            "content": (
-                "You are a strict data extraction system. Your output must be ONLY a valid, parseable JSON object. "
-                "Do not include markdown formatting (like ```json), backticks, or conversational filler. "
-                "You are bound by a strict rule: You may ONLY use information explicitly stated in the provided text."
-            )
-        },
-        {
-            "role": "user", 
-            "content": (
-                "Extract the following information from the text below. \n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. If the information for a field is present, extract it concisely.\n"
-                "2. If the information is NOT explicitly mentioned in the text, you MUST output exactly \"Not in context\" for string values, or [\"Not in context\"] for lists.\n"
-                "3. Do not infer, guess, or use outside knowledge.\n\n"
-                "REQUIRED JSON SCHEMA:\n"
-                "{\n"
-                '  "summary": "String. A 1-2 sentence summary of the text.",\n'
-                '  "action_items": ["List of strings. Specific tasks assigned to people or teams."],\n'
-                '  "risks": ["List of strings. Potential problems, delays, or threats mentioned."],\n'
-                '  "priority_tasks": ["List of strings. Tasks explicitly noted as urgent, immediate, or top priority."]\n'
-                "}\n\n"
-                f"TEXT TO ANALYZE:\n{text}"
-            )
-        }
-    ]
+    # 1. Generate Initial Analysis
+    analysis_messages = get_analysis_prompt(text)
+    initial_analysis = _call_llm(analysis_messages, token, models)
     
-    # Loop through our list of models
-    for model_id in models:
-        logger.info(f"Attempting to use model: {model_id}...")
-        client = InferenceClient(model=model_id, token=token)
+    if not initial_analysis:
+        return "Error: All configured models are currently unavailable on the free tier. Please try again later."
         
-        try:
-            response = client.chat_completion(
-                messages=messages,
-                max_tokens=512,  
-                temperature=0.3
-            )
-            logger.info(f"Success with {model_id}!")
-            return response.choices[0].message.content.strip()
+    if initial_analysis.startswith("Error:"):
+        return initial_analysis
+
+    # 2. Validate the Analysis
+    logger.info("Starting validation of the generated analysis...")
+    validation_messages = get_validation_prompt(text, initial_analysis)
+    validation_response = _call_llm(validation_messages, token, models)
+
+    if not validation_response or validation_response.startswith("Error:"):
+        logger.warning("Validation step failed. Returning unvalidated initial analysis.")
+        return initial_analysis
+
+    # 3. Process Validation Response
+    try:
+        # Clean any possible markdown wrappers around JSON
+        clean_val = validation_response.strip()
+        if clean_val.startswith('```json'):
+            clean_val = clean_val[7:-3].strip()
+        elif clean_val.startswith('```'):
+            clean_val = clean_val[3:-3].strip()
+
+        val_data = json.loads(clean_val)
+        is_valid = val_data.get("is_valid", False)
+        reason = val_data.get("auditor_reasoning", "No reason provided")
         
-        except Exception as e:
-            error_msg = str(e)
-            # If it's a model support/loading error, we continue to the next model
-            if "not supported" in error_msg.lower() or "loading" in error_msg.lower():
-                logger.warning(f"Model unavailable right now. Trying the next one...")
-                continue 
-            else:
-                # If it's an authentication error (bad token), we should stop and report it
-                logger.error(f"Critical error occurred: {error_msg}")
-                return f"A critical error occurred: {error_msg}"
-                
-    # If the loop finishes and all models failed
-    error_text = "Error: All attempted models are currently unavailable on the free tier. Please try again later."
-    logger.error(error_text)
-    return error_text
+        logger.info(f"Validation result: Valid={is_valid}, Reason={reason}")
+
+        if is_valid:
+            return initial_analysis
+        
+        corrected_json = val_data.get("corrected_json")
+        if corrected_json:
+            logger.info("Returning corrected JSON from validator.")
+            if isinstance(corrected_json, str):
+                return corrected_json
+            return json.dumps(corrected_json, indent=2)
+
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse validator JSON response. Returning initial analysis.")
+
+    return initial_analysis
 
 def main() -> None:
     # Handle credentials (prefers environment variable, falls back to hardcoded string)
