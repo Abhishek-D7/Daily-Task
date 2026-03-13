@@ -12,7 +12,11 @@ st.markdown("Extract summaries, action items, and key decisions from your meetin
 API_URL = "http://127.0.0.1:8000/api/analyze"
 
 # --- Tabs for Features ---
-tab1, tab2 = st.tabs(["📊 Extract Summaries & Data", "❓ Ask Document Questions"])
+tab1, tab2, tab3 = st.tabs([
+    "📊 Extract Summaries & Data", 
+    "❓ Ask Document Questions",
+    "🎙️ Meeting Intelligence"
+])
 
 # --- TAB 1: Data Extraction ---
 with tab1:
@@ -154,3 +158,78 @@ with tab2:
                         
                 except requests.exceptions.ConnectionError:
                     st.error("Failed to connect to the API. Is the FastAPI server running?")
+
+# --- TAB 3: Meeting Intelligence ---
+with tab3:
+    st.header("1. Input Meeting Transcript")
+    st.markdown("Paste your meeting notes or upload a transcript file to extract structured insights.")
+    
+    meeting_input_method = st.radio("Choose input method:", ["Paste Text", "Upload .txt File"], key="meeting_radio", horizontal=True)
+
+    meeting_text = ""
+
+    if meeting_input_method == "Paste Text":
+        meeting_text = st.text_area("Enter your meeting transcript here:", height=250, key="meeting_text")
+    else:
+        meeting_uploaded_file = st.file_uploader("Choose a .txt file", type="txt", key="meeting_file")
+        if meeting_uploaded_file is not None:
+            meeting_text = meeting_uploaded_file.getvalue().decode("utf-8")
+            st.info("Transcript file loaded successfully.")
+
+    st.header("2. AI Analysis")
+    st.markdown("Extract Summary, Action Items, Risks, and Decision Points automatically.")
+
+    if st.button("Generate Meeting Insights", type="primary", key="meeting_btn", use_container_width=True):
+        if not meeting_text.strip():
+            st.warning("Please provide a meeting transcript to analyze.")
+        else:
+            with st.spinner("Analyzing meeting transcript with AI..."):
+                try:
+                    meeting_url = API_URL.replace("/analyze", "/meeting")
+                    response = requests.post(meeting_url, json={"transcript": meeting_text})
+                    
+                    if response.status_code == 200:
+                        st.success("Analysis Complete!")
+                        result_data = response.json().get("meeting_result", {})
+                        
+                        # Aesthetic layout using columns and expanders
+                        st.subheader("Meeting Overview")
+                        st.info(result_data.get("summary", "No summary available."))
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.subheader("✅ Action Items")
+                            tasks = result_data.get("tasks", [])
+                            if tasks:
+                                for task in tasks:
+                                    st.markdown(f"- {task}")
+                            else:
+                                st.markdown("*No action items found.*")
+                                
+                            st.subheader("🤝 Decision Points")
+                            decisions = result_data.get("decision_points", [])
+                            if decisions:
+                                for decision in decisions:
+                                    st.markdown(f"- {decision}")
+                            else:
+                                st.markdown("*No decisions found.*")
+
+                        with col2:
+                            st.subheader("⚠️ Risks & Blockers")
+                            risks = result_data.get("risks", [])
+                            if risks:
+                                for risk in risks:
+                                    st.error(f"- {risk}")
+                            else:
+                                st.success("*No risks identified!*")
+                                
+                        with st.expander("View Raw JSON Output"):
+                            st.json(result_data)
+
+                    else:
+                        error_detail = response.json().get("detail", "Unknown error occurred.")
+                        st.error(f"API Error: {error_detail}")
+                        
+                except requests.exceptions.ConnectionError:
+                    st.error("Failed to connect to the API. Make sure the FastAPI backend is running.")
