@@ -125,3 +125,31 @@ def get_qa_grounding_prompt(context_text: str, user_query: str) -> list[dict]:
             )
         }
     ]
+
+def get_meeting_prompt(transcript: str) -> list[dict]:
+    """Generates the prompt for the Meeting Intelligence Tool."""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert Meeting Intelligence Assistant. Your task is to analyze meeting transcripts "
+                "and extract key information into a strict JSON structure. "
+                "You must output ONLY a valid parseable JSON object. Do not include markdown formatting (like ```json), "
+                "backticks, or any conversational text. Keep your extraction firmly grounded in the provided transcript."
+            )
+        },
+        {
+            "role": "user",
+            "content": (
+                "Analyze the following meeting transcript and extract the requested fields.\n\n"
+                "REQUIRED OUTPUT JSON SCHEMA:\n"
+                "{\n"
+                '  "summary": "A concise overview of the meeting\'s main topics, discussions, and outcomes.",\n'
+                '  "tasks": ["List of specific action items and tasks assigned to participants", "Keep them actionable."],\n'
+                '  "risks": ["List of potential problems, blockers, delays, or concerns raised", "Leave empty if none."],\n'
+                '  "decision_points": ["List of key decisions that were explicitly made or agreed upon", "Leave empty if none."]\n'
+                "}\n\n"
+                f"MEETING TRANSCRIPT:\n{transcript}"
+            )
+        }
+    ]
