@@ -28,10 +28,17 @@ with tab1:
     if input_method == "Paste Text":
         document_text = st.text_area("Enter your text here:", height=200, key="extract_text")
     else:
-        uploaded_file = st.file_uploader("Choose a .txt file", type="txt", key="extract_file")
+        st.info("ℹ️ Note: If you upload a document containing images, the images will be ignored. Only text data is extracted and analyzed.")
+        uploaded_file = st.file_uploader("Choose a .txt file (Max 2MB)", type=["txt", "doc", "docx"], key="extract_file")
         if uploaded_file is not None:
-            document_text = uploaded_file.getvalue().decode("utf-8")
-            st.info("File loaded successfully.")
+            if uploaded_file.size > 2 * 1024 * 1024:
+                st.error("❌ File size limit exceeded! Maximum allowed size is 2MB. Please upload a smaller file.")
+            else:
+                try:
+                    document_text = uploaded_file.getvalue().decode("utf-8")
+                    st.success("File loaded successfully.")
+                except UnicodeDecodeError:
+                    st.error("Error decoding file. Please ensure it's a valid text document.")
 
     st.header("2. Prompt Testing (Optional)")
     st.markdown("Provide the expected JSON output to validate if the AI extraction is correct.")
@@ -117,10 +124,17 @@ with tab2:
     if qa_input_method == "Paste Text":
         qa_document_text = st.text_area("Enter your context text here:", height=200, key="qa_text")
     else:
-        qa_uploaded_file = st.file_uploader("Choose a .txt file", type="txt", key="qa_file")
+        st.info("ℹ️ Note: If you upload a document containing images, the images will be ignored. Only text data is extracted and analyzed.")
+        qa_uploaded_file = st.file_uploader("Choose a .txt file (Max 2MB)", type=["txt", "doc", "docx"], key="qa_file")
         if qa_uploaded_file is not None:
-            qa_document_text = qa_uploaded_file.getvalue().decode("utf-8")
-            st.info("Context file loaded successfully.")
+            if qa_uploaded_file.size > 2 * 1024 * 1024:
+                st.error("❌ File size limit exceeded! Maximum allowed size is 2MB. Please upload a smaller file.")
+            else:
+                try:
+                    qa_document_text = qa_uploaded_file.getvalue().decode("utf-8")
+                    st.success("Context file loaded successfully.")
+                except UnicodeDecodeError:
+                    st.error("Error decoding file. Please ensure it's a valid text document.")
 
     st.header("2. Ask a Question")
     user_query = st.text_input("What do you want to know from the document?", placeholder="e.g., How many sick days are allowed?")
@@ -171,10 +185,17 @@ with tab3:
     if meeting_input_method == "Paste Text":
         meeting_text = st.text_area("Enter your meeting transcript here:", height=250, key="meeting_text")
     else:
-        meeting_uploaded_file = st.file_uploader("Choose a .txt file", type="txt", key="meeting_file")
+        st.info("ℹ️ Note: If you upload a document containing images, the images will be ignored. Only text data is extracted and analyzed.")
+        meeting_uploaded_file = st.file_uploader("Choose a .txt file (Max 2MB)", type=["txt", "doc", "docx"], key="meeting_file")
         if meeting_uploaded_file is not None:
-            meeting_text = meeting_uploaded_file.getvalue().decode("utf-8")
-            st.info("Transcript file loaded successfully.")
+            if meeting_uploaded_file.size > 2 * 1024 * 1024:
+                st.error("❌ File size limit exceeded! Maximum allowed size is 2MB. Please upload a smaller file.")
+            else:
+                try:
+                    meeting_text = meeting_uploaded_file.getvalue().decode("utf-8")
+                    st.success("Transcript file loaded successfully.")
+                except UnicodeDecodeError:
+                    st.error("Error decoding file. Please ensure it's a valid text document.")
 
     st.header("2. AI Analysis")
     st.markdown("Extract Summary, Action Items, Risks, and Decision Points automatically.")
