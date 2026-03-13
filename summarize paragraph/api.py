@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from huggingface_hub import InferenceClient
 
-from prompt import get_analysis_prompt, get_validation_prompt, get_evaluation_prompt, get_qa_grounding_prompt
+from prompt import get_analysis_prompt, get_validation_prompt, get_evaluation_prompt, get_qa_grounding_prompt, get_meeting_prompt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -104,6 +104,9 @@ class QARequest(BaseModel):
     text: str
     query: str
 
+class MeetingRequest(BaseModel):
+    transcript: str
+
 
 @app.post("/api/analyze")
 def analyze_endpoint(request: AnalyzeRequest):
@@ -179,3 +182,44 @@ def qa_endpoint(request: QARequest):
         return {"qa_result": parsed_result}
     except json.JSONDecodeError:
         return {"qa_result": {"query": request.query, "answer": "Error parsing LLM response", "confidence_reasoning": result}}
+
+@app.post("/api/meeting")
+def meeting_endpoint(request: MeetingRequest):
+    hf_token = os.getenv("HF_TOKEN") or "HF_TOKEN" 
+    
+    logger.info("Received meeting analysis request.")
+    messages = get_meeting_prompt(request.transcript)
+    
+    result = _call_llm(messages, hf_token)
+    
+    if not result:
+        raise HTTPException(status_code=503, detail="Error: All configured models are currently unavailable.")
+        
+    if result.startswith("Error:"):
+        raise HTTPException(status_code=503, detail=result)
+        
+    try:
+        clean_res = result.strip()
+        if clean_res.startswith('```json'):
+            clean_res = clean_res[7:-3].strip()
+        elif clean_res.startswith('```'):
+            clean_res = clean_res[3:-3].strip()
+            
+        parsed_result = json.loads(clean_res)
+        
+        # Ensure the required keys exist in the output for a meeting
+        for key in ["summary", "tasks", "risks", "decision_points"]:
+            if key not in parsed_result:
+                parsed_result[key] = [] if key != "summary" else ""
+                
+        return {"meeting_result": parsed_result}
+    except json.JSONDecodeError:
+        return {
+            "meeting_result": {
+                "summary": "Error parsing LLM response", 
+                "tasks": [], 
+                "risks": [], 
+                "decision_points": []
+            },
+            "raw_error": result
+        }
